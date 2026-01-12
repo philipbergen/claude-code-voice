@@ -19,6 +19,9 @@ Add voice-to-text capabilities to Claude Code using OpenAI Whisper for speech re
 - macOS/Linux
 - Microphone access
 - Claude Code CLI installed
+- [macOS] Ghostty terminal (does NOT work with macOS Terminal app)
+- [macOS] Must go to Settings > Privacy & Security > Accessibility and press [+] and
+  add Ghostty from Applications and check the box, then restart Ghostty
 
 ### System Dependencies
 
