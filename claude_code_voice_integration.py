@@ -4,6 +4,17 @@ Claude Code Interactive Mode with Voice Input
 Simple wrapper that starts voice input alongside Claude Code
 """
 
+import os
+import ssl
+import certifi
+
+# Fix SSL certificate verification on macOS
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+# Also patch urllib's default SSL context
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+
 import sys
 import subprocess
 from pathlib import Path
@@ -49,16 +60,11 @@ def main():
         
         # Set up voice callback with clipboard functionality
         def handle_voice_text(text: str):
-            print(f"\n🎤 Voice transcribed: {text}")
-            
             try:
                 pyperclip.copy(text)
-                print("📋 Copied to clipboard! Just paste into Claude (Cmd+V)")
+                print("📋 Copied to clipboard - paste with Cmd+V")
             except Exception as e:
                 print(f"❌ Could not copy to clipboard: {e}")
-                print("💡 Copy and paste manually into Claude")
-            
-            print("-" * 50)
         
         voice_input.on_text = handle_voice_text
         voice_input.start(voice_input.on_text)
