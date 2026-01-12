@@ -28,6 +28,21 @@ import pyaudio
 import numpy as np
 import pynput.keyboard
 import whisper
+
+# macOS focus detection
+try:
+    from AppKit import NSWorkspace
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        kCGWindowOwnerPID,
+        kCGWindowLayer,
+        kCGWindowNumber,
+    )
+    HAS_APPKIT = True
+except ImportError:
+    HAS_APPKIT = False
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -299,12 +314,74 @@ class VoiceInput:
 
         return False
     
+    def _get_ancestors(self) -> list:
+        """Get list of ancestor PIDs (cached)"""
+        if not hasattr(self, '_ancestors'):
+            import subprocess
+            current_pid = os.getpid()
+            self._ancestors = []
+            while current_pid > 1:
+                result = subprocess.run(['ps', '-o', 'ppid=', '-p', str(current_pid)], capture_output=True, text=True)
+                if not result.stdout.strip():
+                    break
+                current_pid = int(result.stdout.strip())
+                self._ancestors.append(current_pid)
+        return self._ancestors
+
+    def _get_our_window_id(self) -> int:
+        """Try to determine our terminal window ID"""
+        if not hasattr(self, '_our_window_id'):
+            self._our_window_id = None
+            # Try WINDOWID env var (set by some terminals like xterm, kitty)
+            window_id = os.environ.get('WINDOWID')
+            if window_id:
+                try:
+                    self._our_window_id = int(window_id)
+                except ValueError:
+                    pass
+        return self._our_window_id
+
+    def _is_host_terminal_focused(self) -> bool:
+        """Check if the terminal window hosting this process is focused"""
+        if not HAS_APPKIT:
+            return True  # Can't check, assume focused
+
+        try:
+            # Get frontmost window info using Quartz
+            windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+
+            # Find the frontmost normal window (layer 0)
+            frontmost_window = None
+            for window in windows:
+                if window.get(kCGWindowLayer, 0) == 0:
+                    frontmost_window = window
+                    break
+
+            if not frontmost_window:
+                return True
+
+            frontmost_pid = frontmost_window.get(kCGWindowOwnerPID)
+            frontmost_window_id = frontmost_window.get(kCGWindowNumber)
+
+            our_window_id = self._get_our_window_id()
+
+            # If we know our window ID, check it directly
+            if our_window_id is not None:
+                return frontmost_window_id == our_window_id
+
+            # Fall back to checking if frontmost window's PID is our ancestor
+            return frontmost_pid in self._get_ancestors()
+        except Exception:
+            return True
+
     def _on_key_press(self, key):
         """Handle key press events"""
         if not self.active or self.recording:
             return
 
         if self._matches_hotkey(key):
+            if not self._is_host_terminal_focused():
+                return
             self.recording = True
             threading.Thread(target=self._record_and_transcribe, daemon=True).start()
 
