@@ -6,6 +6,13 @@ Adds push-to-talk voice input capabilities using Whisper
 
 import os
 import sys
+import ssl
+import certifi
+
+# Fix SSL certificate verification on macOS
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
 import time
 import json
 import wave
@@ -117,7 +124,9 @@ class AudioRecorder:
         start_time = time.time()
         min_data_threshold = 5  # Wait for at least 5 chunks before showing levels
         
-        self.console.print("\n[yellow]🎤 Recording... (Release key or stay silent to stop)[/yellow]")
+        # Print status on a single line that will be overwritten
+        sys.stdout.write("\n🎤 Recording... (Release key or stay silent to stop)\n")
+        sys.stdout.flush()
         
         try:
             while self.recording:
@@ -136,7 +145,8 @@ class AudioRecorder:
                 # Only show audio levels after sufficient data
                 if len(self.frames) >= min_data_threshold and self.config.show_audio_levels:
                     level_bar = self.draw_audio_level(level)
-                    sys.stdout.write(f"\r  Level: {level_bar} {int(level):5d}")
+                    # \033[A = move up, \033[2K = clear line, \r = start of line
+                    sys.stdout.write(f"\033[A\033[2K\r  Level: {level_bar} {int(level):5d}\n")
                     sys.stdout.flush()
                 
                 # Detect silence for auto-stop
@@ -157,7 +167,8 @@ class AudioRecorder:
             stream.stop_stream()
             stream.close()
             if self.config.show_audio_levels:
-                sys.stdout.write("\r" + " " * 50 + "\r")  # Clear the level bar
+                sys.stdout.write("\033[A\033[2K\r")  # Move up and clear the level bar line
+                sys.stdout.flush()
             
         if self.frames:
             return b''.join(self.frames)
@@ -215,16 +226,13 @@ class WhisperTranscriber:
         """Transcribe audio data using local Whisper model"""
         if not audio_data:
             return None
-            
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=self.console
-        ) as progress:
-            task = progress.add_task("Transcribing...", total=None)
-            text = self.transcribe_local(audio_data)
-            progress.update(task, completed=True)
-            
+
+        # Overwrite status line
+        sys.stdout.write("\033[A\033[2K\r⏳ Transcribing...\n")
+        sys.stdout.flush()
+
+        text = self.transcribe_local(audio_data)
+
         return text
 
 
@@ -248,7 +256,7 @@ class VoiceInput:
         """Start voice input system"""
         self.active = True
         self.on_text = on_text
-        
+
         # Show startup message
         self.console.print(Panel.fit(
             f"[green]Voice Input Active[/green]\n"
@@ -256,7 +264,7 @@ class VoiceInput:
             f"Model: {self.config.whisper_model}",
             title="🎙️ Voice Mode"
         ))
-        
+
         # Start keyboard listener for PTT
         self.listener = pynput.keyboard.Listener(
             on_press=self._on_key_press,
@@ -267,27 +275,39 @@ class VoiceInput:
     def _matches_hotkey(self, key):
         """Check if key matches the configured hotkey"""
         hotkey = self.config.push_to_talk_key.lower()
-        
+
         # Handle simple key names
         if hasattr(key, 'char') and key.char:
             return key.char.lower() == hotkey
-        
+
         # Handle special keys
         if hasattr(key, 'name'):
             key_name = key.name.lower()
-            return key_name == hotkey or hotkey.endswith(key_name)
-        
+            # Direct match
+            if key_name == hotkey:
+                return True
+            # Handle different naming conventions (e.g., "right_shift" vs "shift_r")
+            # Normalize: "right_shift" -> "shift_r", "left_ctrl" -> "ctrl_l"
+            hotkey_parts = hotkey.replace('_', ' ').split()
+            if len(hotkey_parts) == 2:
+                # Try reversed format: "right_shift" -> "shift_r"
+                if hotkey_parts[0] in ('right', 'left'):
+                    suffix = 'r' if hotkey_parts[0] == 'right' else 'l'
+                    normalized = f"{hotkey_parts[1]}_{suffix}"
+                    if key_name == normalized:
+                        return True
+
         return False
     
     def _on_key_press(self, key):
         """Handle key press events"""
         if not self.active or self.recording:
             return
-            
+
         if self._matches_hotkey(key):
             self.recording = True
             threading.Thread(target=self._record_and_transcribe, daemon=True).start()
-    
+
     def _on_key_release(self, key):
         """Handle key release events"""
         if self._matches_hotkey(key):
@@ -300,18 +320,19 @@ class VoiceInput:
         """Record audio and transcribe in a separate thread"""
         # Set up recording control
         self.recorder.should_continue_recording = True
-        
+
         # Record audio
         audio_data = self.recorder.record_audio()
-        
+
         if audio_data:
             # Transcribe
             text = self.transcriber.transcribe(audio_data)
-            
+
             if text:
-                # Display transcription
-                self.console.print(f"\n[cyan]📝 Transcribed:[/cyan] {text}")
-                
+                # Overwrite status line with result
+                sys.stdout.write(f"\033[A\033[2K\r📝 {text}\n")
+                sys.stdout.flush()
+
                 # Ask for confirmation unless auto-submit is enabled or integration handles it
                 if self.config.auto_submit or getattr(self, 'integration_mode', False):
                     self.on_text(text)
@@ -321,7 +342,8 @@ class VoiceInput:
                     else:
                         self.console.print("[dim]Cancelled[/dim]")
             else:
-                self.console.print("[red]Failed to transcribe audio[/red]")
+                sys.stdout.write("\033[A\033[2K\r❌ Failed to transcribe\n")
+                sys.stdout.flush()
     
     def stop(self):
         """Stop voice input system"""
